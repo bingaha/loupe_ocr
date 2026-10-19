@@ -41,6 +41,7 @@ use gtk::Widget;
 use crate::application::LpApplication;
 use crate::config;
 use crate::deps::*;
+use crate::ocr::OcrStatus;
 use crate::util::gettext::*;
 use crate::util::root::ParentWindow;
 use crate::util::Direction;
@@ -78,6 +79,11 @@ mod imp {
         pub(super) primary_menu: TemplateChild<gtk::MenuButton>,
 
         #[template_child]
+        pub(super) ocr_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub(super) ocr_dot: TemplateChild<gtk::Label>,
+
+        #[template_child]
         pub(super) toolbar_view: TemplateChild<adw::ToolbarView>,
 
         #[template_child]
@@ -109,6 +115,20 @@ mod imp {
         pub(super) show_controls_animation: OnceCell<adw::TimedAnimation>,
         pub(super) hide_controls_animation: OnceCell<adw::TimedAnimation>,
         pub(super) hide_controls_timeout: RefCell<Option<glib::SourceId>>,
+
+        /// Monotonic OCR task id. Bumped on every new task and on window
+        /// close so in-flight workers are orphaned and their results dropped.
+        pub(super) ocr_generation: Cell<u64>,
+        pub(super) ocr_status: RefCell<crate::ocr::OcrStatus>,
+        /// Last successful OCR lines (original image coordinates), kept for
+        /// the upcoming selectable text overlay.
+        pub(super) ocr_lines: RefCell<Vec<crate::ocr::OcrLine>>,
+        /// Sends OCR worker results back to the main thread.
+        pub(super) ocr_tx:
+            RefCell<Option<async_channel::Sender<crate::ocr::OcrEvent>>>,
+        /// File the last finished OCR run belongs to. Used to skip
+        /// re-recognizing the same image when flipping back and forth.
+        pub(super) ocr_path: RefCell<Option<PathBuf>>,
     }
 
     #[glib::object_subclass]
@@ -180,6 +200,7 @@ mod imp {
                 }
             ));
 
+            obj.setup_ocr();
             obj.on_current_page_changed();
             obj.on_fullscreen_changed();
 
@@ -839,6 +860,10 @@ impl LpImageWindow {
         }
 
         imp.properties_button.set_sensitive(has_image);
+
+        // Kick off background OCR for the newly shown image. Failures only
+        // touch the OCR lamp and never affect normal image viewing.
+        self.trigger_ocr();
     }
 
     /// When the image-properties sidebar is displayed or hidden, we should
@@ -866,6 +891,235 @@ impl LpImageWindow {
             .unwrap_or_else(|| gettext("Image Viewer"));
 
         self.window().set_title(Some(&title));
+    }
+
+    /// Sets up the OCR status lamp and the main-thread result receiver.
+    ///
+    /// Called once when the window gains a root (always on the main thread).
+    /// Each window owns its receiver, so OCR tasks from different windows
+    /// never interfere with each other.
+    fn setup_ocr(&self) {
+        // `root()` may run more than once; only set up a single receiver.
+        if self.imp().ocr_tx.borrow().is_some() {
+            return;
+        }
+
+        let obj = self.clone();
+        self.imp().ocr_button.connect_clicked(glib::clone!(
+            #[weak]
+            obj,
+            move |_| obj.on_ocr_button_clicked()
+        ));
+
+        self.update_ocr_button();
+
+        let (tx, rx) = async_channel::bounded::<crate::ocr::OcrEvent>(16);
+        self.imp().ocr_tx.replace(Some(tx));
+
+        let weak = glib::WeakRef::new();
+        weak.set(Some(self));
+        glib::spawn_future_local(async move {
+            while let Ok(event) = rx.recv().await {
+                let Some(win) = weak.upgrade() else { break };
+                // Image switched or window closed while recognizing:
+                // drop the stale result, the worker is already done.
+                if win.imp().ocr_generation.get() != event.generation {
+                    continue;
+                }
+                win.apply_ocr_event(event);
+            }
+        });
+
+        // Orphan any in-flight OCR task when the window is about to close,
+        // so its late result can no longer touch this window.
+        self.window().connect_close_request(glib::clone!(
+            #[weak]
+            obj,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_| {
+                obj.cancel_ocr();
+                glib::Propagation::Proceed
+            }
+        ));
+
+        // Window-level Ctrl+C: copies the painted OCR span when the current
+        // page shows one. Window-level (not page-level) so it works regardless
+        // of keyboard focus; otherwise the native copy-image action would fire
+        // while text is highlighted.
+        let ocr_keys = gtk::EventControllerKey::new();
+        ocr_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        ocr_keys.connect_key_pressed(glib::clone!(
+            #[weak]
+            obj,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, keyval, _, state| {
+                if (keyval == gdk::Key::c || keyval == gdk::Key::C)
+                    && state.contains(gdk::ModifierType::CONTROL_MASK)
+                {
+                    // Never steal copy from text entries (e.g. zoom value).
+                    let editable_focused = gtk::prelude::GtkWindowExt::focus(&obj.window())
+                        .is_some_and(|w| w.dynamic_cast_ref::<gtk::Editable>().is_some());
+                    if !editable_focused
+                        && obj
+                            .image_view()
+                            .current_page()
+                            .is_some_and(|page| page.ocr_copy_span())
+                    {
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
+            }
+        ));
+        self.add_controller(ocr_keys);
+    }
+
+    /// Starts a background OCR task for the currently shown image.
+    ///
+    /// Never blocks the UI thread. Any failure only flips the status lamp
+    /// to red; normal image viewing is completely unaffected.
+    fn trigger_ocr(&self) {
+        let imp = self.imp();
+        let generation = imp.ocr_generation.get().wrapping_add(1);
+        imp.ocr_generation.set(generation);
+
+        let current_page = self.image_view().current_page();
+
+        let Some(path) = self.image_view().current_file().and_then(|f| f.path()) else {
+            imp.ocr_lines.replace(Vec::new());
+            imp.ocr_status.replace(OcrStatus::Idle);
+            self.update_ocr_button();
+            if let Some(page) = current_page {
+                page.clear_ocr_lines();
+            }
+            return;
+        };
+
+        // Same file already recognized (e.g. flipped back to it): just
+        // re-attach the overlay, no need to recognize again.
+        if imp.ocr_path.borrow().as_ref() == Some(&path)
+            && matches!(*imp.ocr_status.borrow(), OcrStatus::Done { .. })
+        {
+            if let Some(page) = current_page {
+                page.set_ocr_lines(imp.ocr_lines.borrow().clone());
+            }
+            return;
+        }
+        imp.ocr_path.replace(Some(path.clone()));
+
+        imp.ocr_lines.replace(Vec::new());
+        imp.ocr_status.replace(OcrStatus::Running);
+        self.update_ocr_button();
+        if let Some(page) = current_page {
+            // Drop the previous image's boxes immediately.
+            page.clear_ocr_lines();
+        }
+
+        let Some(tx) = imp.ocr_tx.borrow().clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let outcome = crate::ocr::run_ocr(&path);
+            let _ = tx.send_blocking(crate::ocr::OcrEvent {
+                generation,
+                outcome,
+            });
+        });
+    }
+
+    /// Cancels the in-flight OCR task, if any.
+    ///
+    /// Cooperative cancellation: the worker thread finishes its current
+    /// inference step (~0.2s, tract cannot be preempted mid-call) but its
+    /// result is discarded and never touches the UI.
+    fn cancel_ocr(&self) {
+        let next = self.imp().ocr_generation.get().wrapping_add(1);
+        self.imp().ocr_generation.set(next);
+    }
+
+    fn apply_ocr_event(&self, event: crate::ocr::OcrEvent) {
+        match event.outcome {
+            Ok(lines) => {
+                let n = lines.len();
+                self.imp().ocr_lines.replace(lines.clone());
+                self.imp().ocr_status.replace(OcrStatus::Done { lines: n });
+                // Show selectable text directly on the image.
+                if let Some(page) = self.image_view().current_page() {
+                    page.set_ocr_lines(lines);
+                }
+            }
+            Err(message) => {
+                log::warn!("OCR failed: {message}");
+                self.imp().ocr_lines.replace(Vec::new());
+                self.imp()
+                    .ocr_status
+                    .replace(OcrStatus::Error { message });
+                if let Some(page) = self.image_view().current_page() {
+                    page.clear_ocr_lines();
+                }
+            }
+        }
+        self.update_ocr_button();
+    }
+
+    /// Redraws the OCR lamp (red/yellow/green/gray) and its tooltip.
+    ///
+    /// On error the tooltip carries the full error message.
+    fn update_ocr_button(&self) {
+        let imp = self.imp();
+        for class in [
+            "ocr-dot-idle",
+            "ocr-dot-running",
+            "ocr-dot-done",
+            "ocr-dot-error",
+        ] {
+            imp.ocr_dot.remove_css_class(class);
+        }
+
+        let (class, tooltip) = match &*imp.ocr_status.borrow() {
+            OcrStatus::Idle => ("ocr-dot-idle", gettext("OCR: no local image")),
+            OcrStatus::Running => ("ocr-dot-running", gettext("OCR: recognizing text…")),
+            OcrStatus::Done { lines } => (
+                "ocr-dot-done",
+                gettext_f("OCR complete, {} lines. Click to copy all text.", [*lines]),
+            ),
+            OcrStatus::Error { message } => {
+                ("ocr-dot-error", gettext_f("OCR failed: {}", [message]))
+            }
+        };
+
+        imp.ocr_dot.add_css_class(class);
+        imp.ocr_button.set_tooltip_text(Some(&tooltip));
+    }
+
+    /// Lamp click: green copies all text, red retries, yellow reminds.
+    fn on_ocr_button_clicked(&self) {
+        match &*self.imp().ocr_status.borrow() {
+            OcrStatus::Done { .. } => {
+                let text = self.imp().ocr_lines.borrow();
+                let text = text
+                    .iter()
+                    .map(|l| l.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    return;
+                }
+                self.clipboard().set_text(&text);
+                self.window().show_toast(
+                    &gettext("OCR text copied to clipboard"),
+                    adw::ToastPriority::Normal,
+                );
+            }
+            OcrStatus::Error { .. } => self.trigger_ocr(),
+            OcrStatus::Running => self.window().show_toast(
+                &gettext("OCR is still recognizing…"),
+                adw::ToastPriority::Normal,
+            ),
+            OcrStatus::Idle => {}
+        }
     }
 
     pub fn image_size_available(&self) {

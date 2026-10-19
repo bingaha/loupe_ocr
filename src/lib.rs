@@ -62,6 +62,7 @@ pub mod decoder;
 pub mod editing;
 pub mod file_model;
 pub mod metadata;
+pub mod ocr;
 pub mod util;
 pub mod widgets;
 

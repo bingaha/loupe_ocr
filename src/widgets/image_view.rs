@@ -284,28 +284,14 @@ mod imp {
 
             self.drag_source.set_exclusive(true);
 
-            self.drag_source.connect_prepare(glib::clone!(
-                #[weak]
-                obj,
-                #[upgrade_or_default]
-                move |gesture, _, _| {
-                    let is_scrollable = obj
-                        .current_page()
-                        .map(|p| p.image().is_hscrollable() || p.image().is_vscrollable());
-
-                    if is_scrollable == Some(true)
-                        || gesture.device().map(|x| x.source())
-                            == Some(gdk::InputSource::Touchscreen)
-                    {
-                        // Do scrolling if scrollable and no drag and drop on touchscreen
-                        gesture.set_state(gtk::EventSequenceState::Denied);
-                        None
-                    } else {
-                        gesture.set_state(gtk::EventSequenceState::Claimed);
-                        obj.current_page().and_then(|p| p.content_provider())
-                    }
-                }
-            ));
+            // OCR build: dragging the image out of the window (e.g. dropping
+            // the file into a file manager) is disabled. Dragging on
+            // recognized text selects the text instead; dragging elsewhere
+            // pans the image when zoomed, as before.
+            self.drag_source.connect_prepare(move |gesture, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                None
+            });
 
             self.drag_source.connect_drag_begin(glib::clone!(
                 #[weak]

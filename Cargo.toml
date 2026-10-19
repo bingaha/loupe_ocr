@@ -39,6 +39,7 @@ indexmap = "2.0.0"
 libc = "0.2.158"
 libgweather = "4.4.0"
 log = "0.4.17"
+pure-onnx-ocr = "0.3.1"
 strum = { version = "0.27.1", features = ["derive"] }
 thiserror = "2.0.3"
 tracing-subscriber = { version = "0.3.18", features = ["fmt", "env-filter"] }

@@ -132,6 +132,30 @@
                     <property name="tooltip-text" translatable="yes">Edit Image</property>
                   </object>
                 </child>
+                <child type="end">
+                  <object class="GtkButton" id="ocr_button">
+                    <property name="tooltip-text" translatable="yes">OCR: recognize text in image</property>
+                    <child>
+                      <object class="GtkBox">
+                        <property name="spacing">6</property>
+                        <child>
+                          <object class="GtkLabel" id="ocr_dot">
+                            <property name="label">●</property>
+                            <style>
+                              <class name="ocr-dot" />
+                              <class name="ocr-dot-idle" />
+                            </style>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkLabel">
+                            <property name="label" translatable="yes">OCR</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
                 <child>
                   <object class="GtkEventControllerMotion" id="headerbar_events" />
                 </child>

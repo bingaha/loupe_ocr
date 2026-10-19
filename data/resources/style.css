@@ -92,3 +92,42 @@ menubutton.suggested-action button {
   padding-left: 17px;
   padding-right: 17px;
 }
+
+/* OCR status lamp (red / yellow / green traffic lights) */
+.ocr-dot {
+  font-size: 13px;
+}
+
+.ocr-dot-idle {
+  color: #9a9996;
+}
+
+.ocr-dot-running {
+  color: #e5a50a;
+}
+
+.ocr-dot-done {
+  color: #33d17a;
+}
+
+.ocr-dot-error {
+  color: #e01b24;
+}
+
+/* OCR selectable text layer: fully transparent text over the original
+   pixels. No hover chrome (WeChat-clean); hover still shows the row text as
+   a tooltip. Highlights are self-drawn (.ocr-hl) during selection only. */
+.ocr-line {
+  color: transparent;
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  outline: none;
+}
+
+/* Self-drawn cross-box highlight (native label selection can't show on
+   several labels at once: single PRIMARY owner). */
+.ocr-hl {
+  background-color: alpha(@accent_bg_color, 0.35);
+  border-radius: 3px;
+}

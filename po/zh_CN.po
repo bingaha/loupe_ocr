@@ -1059,3 +1059,35 @@ msgstr "显示详情"
 
 #~ msgid "“{}” is not a valid image."
 #~ msgstr "“{}” 不是一个有效的图像。"
+
+#: src/widgets/image_window.ui:138
+msgid "OCR: recognize text in image"
+msgstr "OCR：识别图片中的文字"
+
+#: src/widgets/image_window.rs:ocr
+msgid "OCR: no local image"
+msgstr "OCR：无本地图片"
+
+#: src/widgets/image_window.rs:ocr
+msgid "OCR: recognizing text…"
+msgstr "OCR：正在识别文字…"
+
+#: src/widgets/image_window.rs:ocr
+msgid "OCR complete, {} lines. Click to copy all text."
+msgstr "OCR 完成，共 {} 行。点击复制全部文字。"
+
+#: src/widgets/image_window.rs:ocr
+msgid "OCR failed: {}"
+msgstr "OCR 失败：{}"
+
+#: src/widgets/image_window.rs:ocr
+msgid "OCR text copied to clipboard"
+msgstr "OCR 文字已复制到剪贴板上"
+
+#: src/widgets/image_window.rs:ocr
+msgid "OCR is still recognizing…"
+msgstr "OCR 正在识别中…"
+
+#: src/widgets/image_page.rs:ocr
+msgid "Copied {} characters from image"
+msgstr "已从图像复制 {} 个字符"

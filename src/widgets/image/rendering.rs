@@ -388,6 +388,22 @@ impl LpImage {
         (x, y)
     }
 
+    /// Convert original image coordinates to widget coordinates.
+    ///
+    /// This is the exact inverse of [`Self::widget_to_img_coord`]: it accounts
+    /// for zoom, centering ("black bars") and scrolling. The result is in the
+    /// `LpImage` widget allocation and can be used to position overlay
+    /// children (e.g. OCR text boxes) exactly over the rendered pixels.
+    pub fn img_to_widget_coord(&self, (img_x, img_y): (f64, f64)) -> (f64, f64) {
+        let imp = self.imp();
+        let (draw_x, draw_y) = self.img_to_draw_coord((img_x, img_y));
+
+        (
+            draw_x + self.image_rendering_x() - imp.hadj_value(),
+            draw_y + self.image_rendering_y() - imp.vadj_value(),
+        )
+    }
+
     /// Convert image coordinates to drawn image coordinates
     pub fn img_to_draw_coord(&self, (cur_x, cur_y): (f64, f64)) -> (f64, f64) {
         let imp = self.imp();
