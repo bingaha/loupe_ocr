@@ -402,17 +402,6 @@ impl LpImagePage {
         let widget_w = image.width() as f64;
         let widget_h = image.height() as f64;
 
-        // Temporary diagnostics (removed before final replace).
-        eprintln!(
-            "[OCRDBG] relayout lines={} labels={} img_alloc={}x{} zoom={} loaded={}",
-            lines.len(),
-            labels.len(),
-            widget_w,
-            widget_h,
-            image.zoom(),
-            image.is_loaded()
-        );
-
         for (idx, (line, label)) in lines.iter().zip(labels.iter()).enumerate() {
             // Bounding rect of the (possibly slightly skewed) quad.
             let (mut x0, mut y0) = image.img_to_widget_coord(line.points[0]);
@@ -448,22 +437,6 @@ impl LpImagePage {
             }
             if label.width_request() != w || label.height_request() != h {
                 label.set_size_request(w, h);
-            }
-
-            if idx == 0 {
-                eprintln!(
-                    "[OCRDBG] line0 widget=({:.1},{:.1})-({:.1},{:.1}) margin=({:.0},{:.0} {}x{}) label_alloc={}x{}",
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    cx0,
-                    cy0,
-                    w,
-                    h,
-                    label.width(),
-                    label.height()
-                );
             }
 
             // Font size follows the rendered row height so the transparent
@@ -612,7 +585,6 @@ impl LpImagePage {
         if let Some(b) = self.ocr_hit_test(x, y) {
             self.ocr_clear_selections();
             let ch = self.ocr_char_at(b, x, y);
-            eprintln!("[OCRDBG] begin at ({:.0},{:.0}) hit box {} char {} -> CLAIM", x, y, b, ch);
             *self.imp().ocr_cross.borrow_mut() = Some(OcrCrossSel {
                 start_box: b,
                 start_char: ch,
@@ -646,13 +618,6 @@ impl LpImagePage {
         if cross.cur_box != cross.start_box {
             gesture.set_state(gtk::EventSequenceState::Claimed);
         }
-        eprintln!(
-            "[OCRDBG] update cur=({},{}) start={} recognized={}",
-            cross.cur_box,
-            cross.cur_char,
-            cross.start_box,
-            gesture.is_recognized()
-        );
         let snapshot = *cross;
         drop(guard);
         self.ocr_drive_cross(&snapshot);
